@@ -65,11 +65,56 @@
 
 (defn random-bombs
   "Returns count number of bomb locations in an row x col board"
-  [bombs fields]
-  (take bombs (shuffle (range fields))))
+  [bombs field-count]
+  (take bombs (shuffle (range field-count))))
+(random-bombs 3 9)
+
+(defn create-test-board
+  []
+  "Creates a board for basic testing - bombs are always in the same place"
+  (let [rows 3 cols 4]
+    (-> (create-board rows cols)
+        (#(place-bombs % (random-bombs 3 (* rows cols))))
+        (#(apply-surrounding %)))))
+(create-test-board)
+
+(defn create-game-board
+  [rows cols bomb-count]
+  "Creates a board ready to be played on"
+  (-> (create-board rows cols)
+      (#(place-bombs % (random-bombs bomb-count (* rows cols))))
+      (#(apply-surrounding %))))
+(create-game-board 3 3 3)
+
+(defn calculate-surrounding
+  [board ix]
+  (count (filter #(true? %) (map #(:bomb %) (get-surrounding board ix)))))
+
+(defn all-field-indexes
+  [board]
+  (range (* (:rows board) (:cols board))))
+
+; TODO: The to-board business is a temporary debug stuff, will be the same function
+(defn apply-surrounding
+  "Given an index into the board, calculates the surrounding bombs and applies that count to this element.
+   Without an index, applies the surrounding count to the whole board."
+  [board ix]
+  (let [surr (calculate-surrounding board ix)]
+    (assoc-in board [:fields ix :surrounding] surr)))
+(defn apply-surrounding-to-board
+  [board]
+   ; TODO: Causes all interim board states to be printed while in repl mode
+   ; place-bombs does not do this, while having a very similar logic
+  (reduce #(apply-surrounding %1 %2)
+          board
+          (all-field-indexes board)))
+(-> (create-board 3 3)
+    (#(place-bombs % [1 7]))
+    (#(apply-surrounding-to-board %))
+    (#(board-to-string % true)))
 
 (defn place-bombs
-  "Given a board, places bombs randomly and returns a new board with those placed"
+  "Given a board, places bombs at the randomly and returns a new board with those placed"
   [board bombs]
   (let [rows (:rows board)
         cols (:cols board)]
@@ -138,10 +183,10 @@
   (let [rows (:rows board)
         cols (:cols board)
         coord (index-to-coord ix board)]
-
-    (map #(coord-to-index board %) (remove #(is-out-of-bounds? % board)
-                                           (get-surrounding-square coord)))))
-(get-surrounding (create-board 9 9) 12)
+    (map #(get-in board [:fields %])
+         (map #(coord-to-index board %) (remove #(is-out-of-bounds? % board)
+                                                (get-surrounding-square coord))))))
+(get-surrounding (create-board 3 3) 0)
 
 (-> (create-board 3 3)
     (#(place-bombs % [0]))
