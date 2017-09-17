@@ -7,10 +7,12 @@
 ;; ... or just an exercise in writing in clojure
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+; TODO: Use loop/recur instead of regular recursion
+
 (defn create-field
   "Creates a single field. Surrounding count is initialized to zero"
   []
-  {:bomb false :surrounding 0})
+  {:bomb false :surrounding 0 :stepped false :marked false})
 
 (defn create-board
   "Creates a board, modelled as one list. Elements are accessed by index (so element [0,0] is at 0).
@@ -25,12 +27,14 @@
   [field]
   (let [stepped (:stepped field)
         bomb (:bomb field)
-        surr (:surrounding field)]
-    (if stepped
-      (cond bomb "b"
-            (> surr 0) (str surr)
-            (= surr 0) "#")
-      "x")))
+        surr (:surrounding field)
+        marked (:marked field)]
+    (if marked "m"
+        (if stepped
+          (cond bomb "b"
+                (> surr 0) (str surr)
+                (= surr 0) " ")
+          "#"))))
 
 (defn field-to-string
   "Creates textual representation for a field, optionally with debug info"
@@ -43,17 +47,21 @@
 (defn row-to-string
   "Generates textual representation of a single row in a board"
   [row dbg]
-  (clojure.string/join "|" (map #(field-to-string % dbg) row)))
+  (str "*" (clojure.string/join "|" (map #(field-to-string % dbg) row)) "*"))
 
 (defn board-to-string
   "Generates a string representing an entire board"
-  [board dbg]
-  (let [fields (:fields board)
-        rows (:rows board)
-        cols (:cols board)
-        row-lists (partition cols fields)
-        row-lists-str (map row-to-string row-lists)]
-    (clojure.string/join "\n" (map #(row-to-string % dbg) row-lists))))
+  ([board dbg]
+   (let [fields (:fields board)
+         rows (:rows board)
+         cols (:cols board)
+         row-lists (partition cols fields)
+         row-lists-str (map row-to-string row-lists)
+         up-down-border (apply str (repeat (* 2 cols) "*"))]
+     (clojure.string/join "\n" (map #(row-to-string % dbg) row-lists))))
+  ([board]
+   (board-to-string board false)))
+(board-to-string (create-game-board 3 3 3))
 
 (defn index-to-coord
   "Maps from an index to coordinate, mainly useful for easily generating surrounding coordinates."
@@ -75,12 +83,6 @@
 (coord-to-index (create-board 3 3) [0 1])
 (coord-to-index (create-board 3 3) [2 0])
 
-(defn random-bombs
-  "Returns count number of bomb locations in an row x col board"
-  [bombs field-count]
-  (take bombs (shuffle (range field-count))))
-(random-bombs 3 9)
-
 (defn create-test-board
   []
   "Creates a 2x3 board for basic testing - bombs are always in the same place (position 0)"
@@ -98,6 +100,10 @@
       (#(apply-surrounding %))))
 (create-game-board 3 3 3)
 
+(def create-beginner-board (partial create-game-board 9 9 10))
+(def create-intermediate-board (partial create-game-board 16 16 40))
+(def create-expert-board (partial create-game-board 16 30 99))
+
 ;;;;;;;;;;;;;;;;;;;;
 ; Logic dealing with surrounding fields and counting of nearby bombs
 
@@ -114,7 +120,7 @@
     (map #(add-coords % coord) deltas)))
 (get-surrounding-square [0 1])
 
-(defn get-surrounding-square-filtered
+(defn get-surrounding-square-indexes
   "Returns indexes of fields surrounding this index, excluding those that are out of bounds. Fetch the actual
   fields through get-surrounding-fields"
   [board ix]
@@ -126,16 +132,12 @@
 (assert (=
          (-> (create-board 2 3)
              (#(place-bombs % [0]))
-             (#(get-surrounding-square-filtered % 1)))
+             (#(get-surrounding-square-indexes % 1)))
          '(0 2 3 4 5)))
 
-; TODO: move from global to an anonymous function
-(defn get-tuple
-  [board ix]
-  [(get-in board [:fields ix]), ix])
 (defn get-surrounding-fields
   [board ix]
-  (map #(get-tuple board %) (get-surrounding-square-filtered board ix)))
+  (map (fn [ix] [(get-in board [:fields ix]), ix]) (get-surrounding-square-indexes board ix)))
 (-> (create-board 2 3)
     (#(place-bombs % [0]))
     (#(get-surrounding-fields % 1)))
@@ -164,9 +166,11 @@
    (reduce #(apply-surrounding %1 %2)
            board
            (all-field-indexes board))))
-(-> (create-board 2 3)
-    (#(place-bombs % [0]))
-    (apply-surrounding))
+(assert (= "x:b0.|x:.1.\nx:.1.|x:.1."
+           (-> (create-board 2 2)
+               (#(place-bombs % [0]))
+               (apply-surrounding)
+               (#(board-to-string % true)))))
 
 ;;;;;;;;;;;;;;;;;;;;
 ; Bomb placement. NOTE: Random
@@ -181,6 +185,12 @@
             board
             bombs)))
 
+(defn random-bombs
+  "Returns count number of bomb locations in an row x col board"
+  [bombs field-count]
+  (take bombs (shuffle (range field-count))))
+(random-bombs 3 9)
+
 ;;;;;;;;;;;;;;;;;;
 ; Screen drawing logic
 
@@ -193,52 +203,28 @@
 (defn dump-board
   "Dumps a board (prints it to the screen) and for convenience, returns the board again, so it can be
   used in e.g. thread macros while debugging"
-  ([board dbg]
+  ([board dbg msg]
+   (println msg)
    (println (board-to-string board dbg))
    (println)
    board)
-  ([board] (dump-board board false)))
-
-;;;;;;;;;;;;;;;;;;
-; Game board logic, e.g. making a move
-(defn step-on-board
-  "One step on the board at a particular index. Does not check if you actually can step on the field (caller should
-  make sure of that before calling). After this: If there are no surrounding bombs, steps on all surrounding fields
-  that haven't been stepped on before. Stops if there are surrounding bombs."
-  [board ix]
-  (if (= true (get-in board [:fields ix :stepped]))
-    board
-    (let [board (assoc-in board [:fields ix :stepped] true)]
-      (if (not= (get-in board [:fields ix :surrounding]) 0) board
-          (let [surr (get-surrounding-fields board ix)
-                surr (remove #(get-in % [0 :bomb]) surr)
-                surr-indexes (map #(get-in % [1]) surr)]
-            (reduce (fn [new-board ix] (step-on-board new-board ix))
-                    board
-                    surr-indexes))))))
-(-> (create-board 4 3)
-    (#(place-bombs % [0 7]))
-    (apply-surrounding)
-    (#(dump-board % false))
-    (#(step-on-board % 8))
-    (#(dump-board % false)))
+  ([board] (dump-board board false "Board state")))
 
 ;;;;;;;;;;;;;;;;;;
 ; Input/output logic
 
-(defn parse-input
+(defn parse-coord-input
+  "Parses a string of comma separated integers into a tuple of integers"
   [line]
   (map read-string (clojure.string/split line #",")))
-(parse-input "0,2")
+(parse-coord-input "0,2")
 
 (defn get-input
-  "Waits for user to enter text and hit enter, then cleans the input"
+  "Get's input from the user, returning the default value if empty"
   ([] (get-input nil))
   ([default]
    (let [input (clojure.string/trim (read-line))]
-     (if (empty? input)
-       default
-       (parse-input input)))))
+     (if (empty? input) default input))))
 
 (defn add-coords
   [a b]
@@ -259,21 +245,10 @@
   [indexes]
   (map #(get-in board [:fields %]) indexes))
 
-(-> (create-board 3 3)
-    (#(place-bombs % [0]))
-    (#(make-move % 0))
-    (#(get-surrounding % 1)))
-
-(defn game-over?
-  [board]
-  (:exploded board))
-
 (defn game-over
   [board]
   (println "sorry, game over :(")
   (println (board-to-string board)))
-
-(declare user-entered-valid-move user-entered-invalid-move)
 
 (defn prompt-move
   "Prompts the user for a move. The move is fetched via the input-fn, which should return a board coordinate"
@@ -297,23 +272,88 @@
   (println "\n!!! That was an invalid move :(\n")
   (prompt-move board))
 
+;;;;;;;;;;;;;;;;;;
+; Game board logic
+(defn add-mark
+  "Adds a mark on the board at the index. This is a flag added by the user, indicating that he thinks there is a bomb at this location"
+  [board ix]
+  (assoc-in board [:fields ix :marked] true))
+(-> (create-game-board 9 9 10)
+    (#(dump-board % false "No move made"))
+    (#(add-mark % 3))
+    (#(dump-board % false "Created a mark at 3"))
+    (#(step-on-board % 8))
+    (#(dump-board % false "After stepping on index 8"))
+    ((fn [b] nil)))
+
+(defn step-on-board
+  "One step on the board at a particular index. Does not check if you actually can step on the field (caller should
+  make sure of that before calling). After this: If there are no surrounding bombs, steps on all surrounding fields
+  that haven't been stepped on before. Stops if there are surrounding bombs."
+  [board ix]
+  (if (or (get-in board [:fields ix :stepped]) (get-in board [:fields ix :marked]))  ; TODO: add bomb condition here for simplicity
+    board
+    (let [board (assoc-in board [:fields ix :stepped] true)]
+      (if (not= (get-in board [:fields ix :surrounding]) 0) board
+          (let [surr (get-surrounding-fields board ix)
+                surr (remove #(get-in % [0 :bomb]) surr)
+                surr-indexes (map #(get-in % [1]) surr)]
+            (reduce (fn [new-board ix] (step-on-board new-board ix))
+                    board
+                    surr-indexes))))))
+(-> (create-beginner-board)
+    (#(dump-board % false "No move made"))
+    (#(step-on-board % 8))
+    (#(dump-board % false "After stepping on index 8"))
+    (#(step-on-board % 36))
+    (#(dump-board % false "After stepping on index 36"))
+    ((fn [b] nil)))
+
+(defn game-over?
+  [board]
+  (:exploded board))
+
+(defn select-board
+  []
+  (print "Select board, (b)eginner/(i)ntermediate/(e)xpert: ")
+  (let [input (get-input)]
+    (cond (= input "b") (create-beginner-board)
+          (= input "i") (create-intermediate-board)
+          (= input "e") (create-expert-board)
+          :else nil)))
+
+(defn random-words-of-wisdom
+  [] "Tread safely, there are bombs about!")
+
+(defn get-selected-action
+  "Returns either the step function or mark function, based on the user's input"
+  []
+  (println "Action, (s)tep*, (m)ark: ")
+  (let [input (get-input "s")]
+    (if (= "s" input) step-on-board add-mark)))
+
+(defn get-selected-index
+  [board]
+  (println "Where do you want to move, e.g. 0,0?")
+  ; TODO: Error handling
+  (coord-to-index board (parse-coord-input (get-input))))
+
+(defn play-round
+  [board]
+  (println (random-words-of-wisdom))
+  (println (board-to-string board))
+  (play-round
+   ((get-selected-action) board (get-selected-index board)))
+  ; TODO: check game-over condition
+)
+
 (defn game
-  [prompt-move]
-  (let [rows 3
-        cols 3
-        bombs 3
-        fields (* rows cols)
-        board (create-board rows cols)
-        board (place-bombs board (random-bombs bombs fields))]
-    (prompt-move board)))
-  ; (let [rows 3
-  ;       cols 3
-  ;       bombs 3
-  ;       fields (* rows cols)
-  ;       board (create-board rows cols)
-  ;       board (place-bombs board (random-bombs bombs fields))]
-  ;   (prompt-move board (fn [] [0, 1]))))
-;(game (partial prompt-move (fn [] [0, 1])))
+  "Shows the board, asks for input, makes that move, then calls itself recursively until game-over"
+  []
+  ;(let [board (select-board)]; TODO: add back in
+  (let [board (create-beginner-board)]
+    (if (= board nil) (println "Thank you, come again!")
+        (play-round board))))
 
 (defn -main
   "Runs a game of minesweeper, that's all"
