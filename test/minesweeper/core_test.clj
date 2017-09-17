@@ -29,9 +29,9 @@
 ; affect surrounding squares, until a square that has a bomb next to it is reached.
 (deftest test-stepped-on-dies
   (testing "A stepped on board with bombs is shown correctly"
-    (let [board (create-board 2 3)
-          board (place-bombs board [0])
+    (let [board (create-test-board)
           board (make-move board 0)]
+      (println board-to-string board true)
       (is (= (board-to-string board true)
              "b0s|-0 |-0 \n-0 |-0 |-0 "))
       (is (= (board-to-string board false)
@@ -47,6 +47,6 @@
           board (place-bombs board [0])
           board (make-move board 5)]
       (is (= (board-to-string board true)
-             "b0 |-0 |-0 \n-0 |-0 |-0s"))
+             "-2 |b2 |-2 |-1 \nb2 |-0 |-0s"))
       (is (= (board-to-string board false)
              "x|1|#\nx|1|#")))))

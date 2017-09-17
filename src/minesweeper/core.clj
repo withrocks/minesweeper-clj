@@ -7,45 +7,46 @@
 ;; ... or just an exercise in writing in clojure
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-; Example board, vectors of vectors containing field maps (see create-field)
-
 (defn create-field
-  "Creates a single field. Surrounding count is initialized to zero and is set to a value higher than that
-   only if the user steps on a field near it"
+  "Creates a single field. Surrounding count is initialized to zero"
   []
   {:bomb false :surrounding 0})
 
-(defn create-row
-  [cols]
-  (into [] (map (fn [ix] (create-field)) (range cols))))
-
 (defn create-board
-  "Creates a rows x cols board"
+  "Creates a board, modelled as one list. Elements are accessed by index (so element [0,0] is at 0).
+   If you need to fetch by coordinates, you can use the functions index-to-coord and coord-to-index."
   [rows cols]
   {:fields (into [] (map (fn [ix] (create-field)) (range (* rows cols))))
    :rows rows
    :cols cols
    :dead false})
 
+(defn field-to-string-main
+  [field]
+  (let [stepped (:stepped field)
+        bomb (:bomb field)
+        surr (:surrounding field)]
+    (if stepped
+      (cond bomb "b"
+            (> surr 0) (str surr)
+            (= surr 0) "#")
+      "x")))
+
 (defn field-to-string
-  "Shows the field with all info for debug purposes"
+  "Creates textual representation for a field, optionally with debug info"
   [field dbg]
-  (if dbg
-    (format "%s%d%s" (if (:bomb field) "b" "-") (:surrounding field) (if (:stepped field) "s" " "))
-    (let [stepped (:stepped field)
-          bomb (:bomb field)
-          surr (:surrounding field)]
-      (if stepped
-        (cond bomb "b"
-              (> surr 0) (str surr)
-              (= surr 0) "#")
-        "x"))))
+  (let [main-string (field-to-string-main field)]
+    (if dbg
+      (format "%s:%s%d%s" main-string (if (:bomb field) "b" ".") (:surrounding field) (if (:stepped field) "s" "."))
+      main-string)))
 
 (defn row-to-string
+  "Generates textual representation of a single row in a board"
   [row dbg]
   (clojure.string/join "|" (map #(field-to-string % dbg) row)))
 
 (defn board-to-string
+  "Generates a string representing an entire board"
   [board dbg]
   (let [fields (:fields board)
         rows (:rows board)
@@ -55,13 +56,24 @@
     (clojure.string/join "\n" (map #(row-to-string % dbg) row-lists))))
 
 (defn index-to-coord
-  "Maps from a index to coordinate"
-  [ix board]
+  "Maps from an index to coordinate, mainly useful for easily generating surrounding coordinates."
+  [board ix]
   (let [rows (:rows board)
         cols (:cols board)
         row (int (/ ix cols))
         col (rem ix cols)]
     [row col]))
+
+(defn coord-to-index
+  "Maps from coordinates to indexes"
+  [board coord]
+  (let [[row col] coord
+        rows (:rows board)
+        cols (:cols board)]
+    (+ (* row cols) col)))
+(coord-to-index (create-board 3 3) [0 0])
+(coord-to-index (create-board 3 3) [0 1])
+(coord-to-index (create-board 3 3) [2 0])
 
 (defn random-bombs
   "Returns count number of bomb locations in an row x col board"
@@ -71,10 +83,10 @@
 
 (defn create-test-board
   []
-  "Creates a board for basic testing - bombs are always in the same place"
-  (let [rows 3 cols 4]
+  "Creates a 2x3 board for basic testing - bombs are always in the same place (position 0)"
+  (let [rows 2 cols 3]
     (-> (create-board rows cols)
-        (#(place-bombs % (random-bombs 3 (* rows cols))))
+        (#(place-bombs % [0]))
         (#(apply-surrounding %)))))
 (create-test-board)
 
@@ -86,32 +98,78 @@
       (#(apply-surrounding %))))
 (create-game-board 3 3 3)
 
-(defn calculate-surrounding
+;;;;;;;;;;;;;;;;;;;;
+; Logic dealing with surrounding fields and counting of nearby bombs
+
+(defn square-deltas
+  "Returns the deltas that form a square around a coordinate on the xy plane"
+  []
+  (remove #(= % [0 0]) (for [x [-1 0 1] y [-1 0 1]] (vector x y))))
+(square-deltas)
+
+(defn get-surrounding-square
+  "Returns the square surrounding this coordinate on the xy plane. Includes any potential out-of-bounds coordinates"
+  [coord]
+  (let [deltas (square-deltas)]
+    (map #(add-coords % coord) deltas)))
+(get-surrounding-square [0 1])
+
+(defn get-surrounding-square-filtered
+  "Returns indexes of fields surrounding this index, excluding those that are out of bounds. Fetch the actual
+  fields through get-surrounding-fields"
   [board ix]
-  (count (filter #(true? %) (map #(:bomb %) (get-surrounding board ix)))))
+  (let [rows (:rows board)
+        cols (:cols board)
+        coord (index-to-coord board ix)]
+    (map #(coord-to-index board %) (remove #(is-out-of-bounds? % board)
+                                           (get-surrounding-square coord)))))
+(assert (=
+         (-> (create-board 2 3)
+             (#(place-bombs % [0]))
+             (#(get-surrounding-square-filtered % 1)))
+         '(0 2 3 4 5)))
+
+; TODO: move from global to an anonymous function
+(defn get-tuple
+  [board ix]
+  [(get-in board [:fields ix]), ix])
+(defn get-surrounding-fields
+  [board ix]
+  (map #(get-tuple board %) (get-surrounding-square-filtered board ix)))
+(-> (create-board 2 3)
+    (#(place-bombs % [0]))
+    (#(get-surrounding-fields % 1)))
+
+(defn count-surrounding
+  "Counts bombs surrounding this field"
+  [board ix]
+  (count (filter #(true? %) (map #(get-in % [0 :bomb]) (get-surrounding-fields board ix)))))
+(assert (= 3
+           (-> (create-board 2 3)
+               (#(place-bombs % [0 2 4]))
+               (#(count-surrounding % 1)))))
 
 (defn all-field-indexes
+  "Returns all field indexes on a board"
   [board]
   (range (* (:rows board) (:cols board))))
 
-; TODO: The to-board business is a temporary debug stuff, will be the same function
 (defn apply-surrounding
   "Given an index into the board, calculates the surrounding bombs and applies that count to this element.
    Without an index, applies the surrounding count to the whole board."
-  [board ix]
-  (let [surr (calculate-surrounding board ix)]
-    (assoc-in board [:fields ix :surrounding] surr)))
-(defn apply-surrounding-to-board
-  [board]
-   ; TODO: Causes all interim board states to be printed while in repl mode
-   ; place-bombs does not do this, while having a very similar logic
-  (reduce #(apply-surrounding %1 %2)
-          board
-          (all-field-indexes board)))
-(-> (create-board 3 3)
-    (#(place-bombs % [1 7]))
-    (#(apply-surrounding-to-board %))
-    (#(board-to-string % true)))
+  ([board ix]
+   (let [surr (count-surrounding board ix)]
+     (assoc-in board [:fields ix :surrounding] surr)))
+  ([board]
+   (reduce #(apply-surrounding %1 %2)
+           board
+           (all-field-indexes board))))
+(-> (create-board 2 3)
+    (#(place-bombs % [0]))
+    (apply-surrounding))
+
+;;;;;;;;;;;;;;;;;;;;
+; Bomb placement. NOTE: Random
 
 (defn place-bombs
   "Given a board, places bombs at the randomly and returns a new board with those placed"
@@ -122,6 +180,51 @@
               (assoc-in new-board [:fields ix :bomb] true))
             board
             bombs)))
+
+;;;;;;;;;;;;;;;;;;
+; Screen drawing logic
+
+(defn clear-screen
+  "NOTE: This is not portable (terminal specific)"
+  []
+  (print (str (char 27) "[2J")) ; clear screen
+  (print (str (char 27) "[;H"))) ; move cursor to the top left corner of the screen
+
+(defn dump-board
+  "Dumps a board (prints it to the screen) and for convenience, returns the board again, so it can be
+  used in e.g. thread macros while debugging"
+  ([board dbg]
+   (println (board-to-string board dbg))
+   (println)
+   board)
+  ([board] (dump-board board false)))
+
+;;;;;;;;;;;;;;;;;;
+; Game board logic, e.g. making a move
+(defn step-on-board
+  "One step on the board at a particular index. Does not check if you actually can step on the field (caller should
+  make sure of that before calling). After this: If there are no surrounding bombs, steps on all surrounding fields
+  that haven't been stepped on before. Stops if there are surrounding bombs."
+  [board ix]
+  (if (= true (get-in board [:fields ix :stepped]))
+    board
+    (let [board (assoc-in board [:fields ix :stepped] true)]
+      (if (not= (get-in board [:fields ix :surrounding]) 0) board
+          (let [surr (get-surrounding-fields board ix)
+                surr (remove #(get-in % [0 :bomb]) surr)
+                surr-indexes (map #(get-in % [1]) surr)]
+            (reduce (fn [new-board ix] (step-on-board new-board ix))
+                    board
+                    surr-indexes))))))
+(-> (create-board 4 3)
+    (#(place-bombs % [0 7]))
+    (apply-surrounding)
+    (#(dump-board % false))
+    (#(step-on-board % 8))
+    (#(dump-board % false)))
+
+;;;;;;;;;;;;;;;;;;
+; Input/output logic
 
 (defn parse-input
   [line]
@@ -137,26 +240,11 @@
        default
        (parse-input input)))))
 
-(defn make-move
-  [board ix]
-  ; TODO: Idiomatic way of setting two values on the same object, where one is conditional 
-  (let [board (if (get-in board [:fields ix :bomb])
-                (assoc board :dead true) board)
-        board (assoc-in board [:fields ix :stepped] true)]
-    board))
-
 (defn add-coords
   [a b]
   [(+ (get a 0) (get b 0))
    (+ (get a 1) (get b 1))])
 (add-coords [1 1] [0 0])
-
-(defn get-surrounding-square
-  "Returns the square surrounding this coordinate. Does not filter illegal coordinates"
-  [coord]
-  (let [deltas (for [x [-1 0 1] y [-1 0 1]] (vector x y))]
-    (map #(add-coords % coord) deltas)))
-(get-surrounding-square [0 0])
 
 (defn is-out-of-bounds?
   [coord board]
@@ -167,26 +255,9 @@
         (>= row rows) (>= col cols))))
 (is-out-of-bounds? [3 2] (create-board 3 3))
 
-(defn coord-to-index
-  [board coord]
-  (let [[row col] coord
-        rows (:rows board)
-        cols (:cols board)]
-    (+ (* row cols) col)))
-(coord-to-index (create-board 3 3) [0 0])
-(coord-to-index (create-board 3 3) [0 1])
-(coord-to-index (create-board 3 3) [2 0])
-
-(defn get-surrounding
-  "Returns all fields surrounding this square, excluding those that are out of bounds"
-  [board ix]
-  (let [rows (:rows board)
-        cols (:cols board)
-        coord (index-to-coord ix board)]
-    (map #(get-in board [:fields %])
-         (map #(coord-to-index board %) (remove #(is-out-of-bounds? % board)
-                                                (get-surrounding-square coord))))))
-(get-surrounding (create-board 3 3) 0)
+(defn get-fields
+  [indexes]
+  (map #(get-in board [:fields %]) indexes))
 
 (-> (create-board 3 3)
     (#(place-bombs % [0]))
@@ -225,11 +296,6 @@
   [board]
   (println "\n!!! That was an invalid move :(\n")
   (prompt-move board))
-
-(defn all-moves
-  [rows cols]
-  (map #(index-to-coord % rows cols) (range (* rows cols))))
-(all-moves 3 3)
 
 (defn game
   [prompt-move]
